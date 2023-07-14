@@ -9,7 +9,6 @@
 #include <sstream>
 #include <syncstream>
 #include <unordered_map>
-#include <thread>
 
 namespace net = boost::asio;
 namespace sys = boost::system;
@@ -101,29 +100,6 @@ private:
     steady_clock::time_point start_time_{steady_clock::now()};
 };
 
-class ThreadChecker
-{
-public:
-    explicit ThreadChecker(std::atomic_int &counter)
-        : counter_{counter}
-    {
-    }
-
-    ThreadChecker(const ThreadChecker &) = delete;
-    ThreadChecker &operator=(const ThreadChecker &) = delete;
-
-    ~ThreadChecker()
-    {
-        // assert выстрелит, если между вызовом конструктора и деструктора
-        // значение expected_counter_ изменится
-        assert(expected_counter_ == counter_);
-    }
-
-private:
-    std::atomic_int &counter_;
-    int expected_counter_ = ++counter_;
-};
-
 // Функция, которая будет вызвана по окончании обработки заказа
 using OrderHandler = std::function<void(sys::error_code ec, int id, Hamburger *hamburger)>;
 using Timer = net::steady_timer;
@@ -148,9 +124,8 @@ private:
     void RoastCutlet()
     {
         logger_.LogMessage("Start roasting cutlet"sv);
-        roast_timer_.async_wait(
-            net::bind_executor(strand_, [self = shared_from_this()](sys::error_code ec)
-                               { self->OnRoasted(ec); }));
+        roast_timer_.async_wait([self = shared_from_this()](sys::error_code ec)
+                                { self->OnRoasted(ec); });
     }
 
     void OnRoasted(sys::error_code ec)
@@ -170,9 +145,8 @@ private:
     void MarinadeOnion()
     {
         logger_.LogMessage("Start marinading onion"sv);
-        marinade_timer_.async_wait(
-            net::bind_executor(strand_, [self = shared_from_this()](sys::error_code ec)
-                               { self->OnOnionMarinaded(ec); }));
+        marinade_timer_.async_wait([self = shared_from_this()](sys::error_code ec)
+                                   { self->OnOnionMarinaded(ec); });
     }
 
     void OnOnionMarinaded(sys::error_code ec)
@@ -264,8 +238,6 @@ private:
     Hamburger hamburger_;
     bool onion_marinaded_ = false;
     bool delivered_ = false;
-
-    net::strand<net::io_context::executor_type> strand_{net::make_strand(io_)};
 };
 
 class Restaurant
@@ -288,25 +260,9 @@ private:
     int next_order_id_ = 0;
 };
 
-template <typename Fn>
-void RunWorkers(unsigned n, const Fn &fn)
-{
-    n = std::max(1u, n);
-    std::vector<std::jthread> workers;
-    workers.reserve(n - 1);
-    // Запускаем n-1 рабочих потоков, выполняющих функцию fn
-    while (--n)
-    {
-        workers.emplace_back(fn);
-    }
-    fn();
-}
-
 int main()
 {
-    const unsigned num_workers = 4;
-    // Сообщаем io_context о количестве потоков, которые будут одновременно вызывать метод run
-    net::io_context io(num_workers);
+    net::io_context io;
 
     Restaurant restaurant{io};
 
@@ -325,23 +281,14 @@ int main()
     };
 
     const int id1 = restaurant.MakeHamburger(false, handle_result);
-    const int id2 = restaurant.MakeHamburger(false, handle_result);
-    const int id3 = restaurant.MakeHamburger(false, handle_result);
-    const int id4 = restaurant.MakeHamburger(false, handle_result);
-
-    const int id5 = restaurant.MakeHamburger(true, handle_result);
-    const int id6 = restaurant.MakeHamburger(true, handle_result);
-    const int id7 = restaurant.MakeHamburger(true, handle_result);
-    const int id8 = restaurant.MakeHamburger(true, handle_result);
+    const int id2 = restaurant.MakeHamburger(true, handle_result);
 
     // До вызова io.run() никакие заказы не выполняются
     assert(orders.empty());
-
-    RunWorkers(num_workers, [&io]
-               { io.run(); });
+    io.run();
 
     // После вызова io.run() все заказы быть выполнены
-    assert(orders.size() == 8u);
+    assert(orders.size() == 2u);
     {
         // Проверяем заказ без лука
         const auto &o = orders.at(id1);
