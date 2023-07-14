@@ -87,7 +87,7 @@ void HandleConnection(tcp::socket &socket)
             {
                 StringResponse response = HandleStringRequest(http::status::ok, *request);
                 std::stringstream ss;
-                ss << "<strong>Hello "sv << request->target().substr(1) << "</strong>"sv;
+                ss << "Hello, "sv << request->target().substr(1);
                 response.body() = ss.str();
                 response.content_length(ss.str().size());
                 http::write(socket, response);
