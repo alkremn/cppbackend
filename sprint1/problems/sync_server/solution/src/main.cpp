@@ -18,6 +18,7 @@ namespace http = beast::http;
 
 using StringRequest = http::request<http::string_body>;
 using StringResponse = http::response<http::string_body>;
+using EmptyResponse = http::response<http::empty_body>;
 
 struct ContentType
 {
@@ -25,31 +26,34 @@ struct ContentType
     constexpr static std::string_view TEXT_HTML = "text/html"sv;
 };
 
-StringResponse MakeStringResponse(http::status status, std::string_view body, unsigned http_version,
+StringResponse MakeStringResponse(http::status status, unsigned http_version,
                                   bool keep_alive,
                                   std::string_view content_type = ContentType::TEXT_HTML)
 {
     StringResponse response(status, http_version);
     response.set(http::field::content_type, content_type);
-    response.body() = body;
-    response.content_length(body.size());
     response.keep_alive(keep_alive);
     return response;
 }
 
-StringResponse HandleRequest(StringRequest &&req)
+EmptyResponse MakeEmptyResponse(http::status status, unsigned http_version,
+                                bool keep_alive,
+                                std::string_view content_type = ContentType::TEXT_HTML)
 {
+    EmptyResponse response(status, http_version);
+    response.set(http::field::content_type, content_type);
+    response.keep_alive(keep_alive);
+    return response;
+}
 
-    if (req.method() == http::verb::get)
-    {
-        std::stringstream ss;
-        ss << "<strong>Hello "sv << req.target() << "</strong>"sv;
-        [&req](http::status status, std::string_view text)
-        {
-            return MakeStringResponse(status, text, req.version(), req.keep_alive());
-        }(http::status::ok, ss.str());
-    }
-    return {};
+StringResponse HandleStringRequest(http::status status, const StringRequest &req)
+{
+    return MakeStringResponse(status, req.version(), req.keep_alive());
+}
+
+EmptyResponse HandleEmptyRequest(http::status status, const StringRequest &req)
+{
+    return MakeEmptyResponse(status, req.version(), req.keep_alive());
 }
 
 std::optional<StringRequest> ReadRequest(tcp::socket &socket, beast::flat_buffer &buffer)
@@ -71,8 +75,7 @@ std::optional<StringRequest> ReadRequest(tcp::socket &socket, beast::flat_buffer
     return req;
 }
 
-template <typename RequestHandler>
-void HandleConnection(tcp::socket &socket, RequestHandler &&handle_request)
+void HandleConnection(tcp::socket &socket)
 {
     try
     {
@@ -80,11 +83,44 @@ void HandleConnection(tcp::socket &socket, RequestHandler &&handle_request)
 
         while (auto request = ReadRequest(socket, buffer))
         {
-            StringResponse response = handle_request(std::move(request));
-            http::write(socket, response);
-            if (response.need_eof())
+            if (request->method() == http::verb::get)
             {
-                break;
+                StringResponse response = HandleStringRequest(http::status::ok, *request);
+                std::stringstream ss;
+                ss << "<strong>Hello "sv << request->target() << "</strong>"sv;
+                response.body() = ss.str();
+                response.content_length(ss.str().size());
+                http::write(socket, response);
+
+                if (response.need_eof())
+                {
+                    break;
+                }
+            }
+            else if (request->method() == http::verb::head)
+            {
+                EmptyResponse response = HandleEmptyRequest(http::status::ok, *request);
+                response.content_length(0);
+                http::write(socket, response);
+
+                if (response.need_eof())
+                {
+                    break;
+                }
+            }
+            else
+            {
+                StringResponse response = HandleStringRequest(http::status::method_not_allowed, *request);
+                std::stringstream ss;
+                ss << "Invalid method"sv;
+                response.body() = ss.str();
+                response.content_length(ss.str().size());
+                http::write(socket, response);
+
+                if (response.need_eof())
+                {
+                    break;
+                }
             }
         }
     }
@@ -110,7 +146,6 @@ int main()
     {
         tcp::socket socket(io_context);
         acceptor.accept(socket);
+        HandleConnection(socket);
     }
-
-    // HandleConnection()
 }
